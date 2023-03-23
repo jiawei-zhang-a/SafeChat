@@ -2,6 +2,13 @@
 
 SafeChat is a secure messaging application that uses the Signal protocol to provide end-to-end encryption for messages exchanged between users. The application is built using the Go programming language and uses a crypto library that includes AES-GCM, SHA-256, and P-256 algorithms.
 
+Some complexities such as prekeys have been removed for simplicity.
+- Signal uses the curve25519 elliptic curve and AES-CBC encryption with HMAC. We’ll
+use NIST’s P-256 curve and AES-GCM authenticated encryption (largely because these
+are available in Go’s standard libraries). You shouldn’t need to touch this code directly.
+- The data being sent with each message will be slightly different.
+- A slightly different key ratchet.
+
 ## Getting Started
 
 To get started with SafeChat, you will need to have Go installed on your machine. You can download and install the latest version of Go from the [official website](https://golang.org/dl/).
@@ -17,10 +24,14 @@ After cloning the repository, navigate to the project directory:
 
 Then, you can run the application using the following command:
 
-```go run main.go```
+```go run chatter.go```
 
 
 This will start the SafeChat application, and you will be prompted to enter your username and password to log in.
+
+## Development
+This will test the whole program and give detailed information
+```go test -v```
 
 ## Features
 
