@@ -39,6 +39,8 @@ import (
 	//	"bytes" //un-comment for helpers like bytes.equal
 	"encoding/binary"
 	"errors"
+
+	//"golang.org/x/text/message"
 	//	"fmt" //un-comment if you want to do any debug printing.
 )
 
@@ -152,7 +154,7 @@ func (c *Chatter) InitiateHandshake(partnerIdentity *PublicKey) (*PublicKey, err
 
 	c.Sessions[*partnerIdentity] = &Session{
 		MyDHRatchet       : GenerateKeyPair(), // ephemeral DH key
-		PartnerDHRatchet  : partnerIdentity,
+		PartnerDHRatchet  : nil,
 		CachedReceiveKeys : make(map[int]*SymmetricKey),
 		SendCounter       : 0,
 		LastUpdate        : 0,
@@ -174,7 +176,7 @@ func (c *Chatter) ReturnHandshake(partnerIdentity,
 
 	c.Sessions[*partnerIdentity] = &Session{
 		MyDHRatchet:      GenerateKeyPair(), // ephemeral DH key
-		PartnerDHRatchet: partnerIdentity,
+		PartnerDHRatchet: partnerEphemeral,
 		CachedReceiveKeys: make(map[int]*SymmetricKey),
 		SendCounter:      0,
 		LastUpdate:       0,
@@ -209,6 +211,9 @@ func (c *Chatter) FinalizeHandshake(partnerIdentity,
 		return nil, errors.New("Can't finalize session, not yet open")
 	}
 
+	//set the partner's ephemeral key aka DH ratchet
+	c.Sessions[*partnerIdentity].PartnerDHRatchet = partnerEphemeral
+
 	// Derive the root key
 	g_Ab := DHCombine(partnerEphemeral, &c.Identity.PrivateKey)
 	g_aB := DHCombine(partnerIdentity, &c.Sessions[*partnerIdentity].MyDHRatchet.PrivateKey)
@@ -238,24 +243,49 @@ func (c *Chatter) SendMessage(partnerIdentity *PublicKey,
 		return nil, errors.New("Can't send message to partner with no open session")
 	}
 
-	//fmt.Print("SendChain=Nil: ", c.Sessions[*partnerIdentity].SendChain == nil)
-
-	//Ratchet the send chain , delete the old sendchain key and get the message key
-	chainKey := c.Sessions[*partnerIdentity].SendChain.DeriveKey(CHAIN_LABEL)
-	c.Sessions[*partnerIdentity].SendChain.Zeroize()
-	c.Sessions[*partnerIdentity].SendChain = chainKey
-	messageKey := chainKey.DeriveKey(KEY_LABEL)
-	c.Sessions[*partnerIdentity].SendCounter++
+	//declare the message key
+	var messageKey *SymmetricKey
 
 	//Initialize the message
+	c.Sessions[*partnerIdentity].SendCounter++
 	message := &Message{
 		Sender:   &c.Identity.PublicKey,
 		Receiver: partnerIdentity,
+		NextDHRatchet: &c.Sessions[*partnerIdentity].MyDHRatchet.PublicKey,
 		Counter: c.Sessions[*partnerIdentity].SendCounter,
 		LastUpdate: c.Sessions[*partnerIdentity].LastUpdate,
 		Ciphertext:  nil,
 		IV            : nil,
 	}
+
+	//if the send chain is not nil, ratchet the send chain
+	if c.Sessions[*partnerIdentity].SendChain != nil {
+		//Ratchet the send chain , delete the old sendchain key and get the message key
+		chainKey := c.Sessions[*partnerIdentity].SendChain.DeriveKey(CHAIN_LABEL)
+		c.Sessions[*partnerIdentity].SendChain.Zeroize()
+		c.Sessions[*partnerIdentity].SendChain = chainKey
+	} else {// if the send chain is nil, ratchet the root chain the the send chain
+
+		//generate new DH key
+		NewDH := GenerateKeyPair()
+		c.Sessions[*partnerIdentity].MyDHRatchet = NewDH
+		message.NextDHRatchet = &NewDH.PublicKey
+
+		//Ratchet the root chain , delete the old rootchain key and get the message key
+		g_a1b2 := DHCombine(c.Sessions[*partnerIdentity].PartnerDHRatchet, &c.Sessions[*partnerIdentity].MyDHRatchet.PrivateKey)
+		NewRootChain := CombineKeys(c.Sessions[*partnerIdentity].RootChain.DeriveKey(ROOT_LABEL), g_a1b2)
+		c.Sessions[*partnerIdentity].RootChain.Zeroize()
+		c.Sessions[*partnerIdentity].RootChain = NewRootChain
+		
+		//derive the send chain
+		chainKey := c.Sessions[*partnerIdentity].RootChain.DeriveKey(CHAIN_LABEL)
+		c.Sessions[*partnerIdentity].SendChain = chainKey
+	}
+
+
+
+	//derive the message key
+	messageKey = c.Sessions[*partnerIdentity].SendChain.DeriveKey(KEY_LABEL)
 
 	// Encrypt the message with AES-GCM
 	iv := NewIV()
