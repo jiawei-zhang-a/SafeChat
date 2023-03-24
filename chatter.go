@@ -96,7 +96,7 @@ type Message struct {
 
 // EncodeAdditionalData encodes all of the non-ciphertext fields of a message
 // into a single byte array, suitable for use as additional authenticated data
-// in an AEAD scheme. You should not need to modify this code.
+// in an AEAD scheme. 
 func (m *Message) EncodeAdditionalData() []byte {
 	buf := make([]byte, 8+3*FINGERPRINT_LENGTH)
 
@@ -238,8 +238,12 @@ func (c *Chatter) SendMessage(partnerIdentity *PublicKey,
 		return nil, errors.New("Can't send message to partner with no open session")
 	}
 
-	//Ratchet the send chain and get the message key
+	//fmt.Print("SendChain=Nil: ", c.Sessions[*partnerIdentity].SendChain == nil)
+
+	//Ratchet the send chain , delete the old sendchain key and get the message key
 	chainKey := c.Sessions[*partnerIdentity].SendChain.DeriveKey(CHAIN_LABEL)
+	c.Sessions[*partnerIdentity].SendChain.Zeroize()
+	c.Sessions[*partnerIdentity].SendChain = chainKey
 	messageKey := chainKey.DeriveKey(KEY_LABEL)
 	c.Sessions[*partnerIdentity].SendCounter++
 
@@ -252,14 +256,14 @@ func (c *Chatter) SendMessage(partnerIdentity *PublicKey,
 		Ciphertext:  nil,
 		IV            : nil,
 	}
+
 	// Encrypt the message with AES-GCM
 	iv := NewIV()
 	message.IV = iv
 	message.Ciphertext = messageKey.AuthenticatedEncrypt(plaintext, message.EncodeAdditionalData(), iv)
 
-
-
-	//check ther is send chain
+	//delete the message key
+	messageKey.Zeroize()
 
 	return message, nil
 }
@@ -273,7 +277,16 @@ func (c *Chatter) ReceiveMessage(message *Message) (string, error) {
 		return "", errors.New("Can't receive message from partner with no open session")
 	}
 
-	// TODO: your code here
+	//Derive the chain key
+	chainKey := c.Sessions[*message.Sender].ReceiveChain.DeriveKey(CHAIN_LABEL)
+	c.Sessions[*message.Sender].ReceiveChain.Zeroize()
+	c.Sessions[*message.Sender].ReceiveChain = chainKey
 
-	return "", errors.New("Not implemented")
+	// Derive the message key
+	messageKey := chainKey.DeriveKey(KEY_LABEL)
+
+	// Decrypt the message with AES-GCM
+	plaintext,err := messageKey.AuthenticatedDecrypt(message.Ciphertext, message.EncodeAdditionalData(), message.IV)
+
+	return plaintext, err
 }
