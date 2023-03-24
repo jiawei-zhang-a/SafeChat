@@ -191,6 +191,12 @@ func (c *Chatter) ReturnHandshake(partnerIdentity,
 	// Derive the handshake check key
 	AuthKey := RootKey.DeriveKey(HANDSHAKE_CHECK_LABEL)
 
+	//set the root chain
+	c.Sessions[*partnerIdentity].RootChain = RootKey
+
+	//set the receive chain 
+	c.Sessions[*partnerIdentity].ReceiveChain = RootKey.Duplicate()
+
 	return &c.Sessions[*partnerIdentity].MyDHRatchet.PublicKey, AuthKey,nil
 }
 
@@ -213,6 +219,13 @@ func (c *Chatter) FinalizeHandshake(partnerIdentity,
 	// Derive the handshake check key
 	AuthKey := RootKey.DeriveKey(HANDSHAKE_CHECK_LABEL)
 
+	//set the root chain
+	c.Sessions[*partnerIdentity].RootChain = RootKey
+
+	//set the receive chain and send chain
+	c.Sessions[*partnerIdentity].ReceiveChain = RootKey.Duplicate()
+	c.Sessions[*partnerIdentity].SendChain = RootKey.Duplicate()
+
 	return AuthKey, nil
 }
 
@@ -225,15 +238,30 @@ func (c *Chatter) SendMessage(partnerIdentity *PublicKey,
 		return nil, errors.New("Can't send message to partner with no open session")
 	}
 
+	//Ratchet the send chain and get the message key
+	chainKey := c.Sessions[*partnerIdentity].SendChain.DeriveKey(CHAIN_LABEL)
+	messageKey := chainKey.DeriveKey(KEY_LABEL)
+	c.Sessions[*partnerIdentity].SendCounter++
+
+	//Initialize the message
 	message := &Message{
 		Sender:   &c.Identity.PublicKey,
 		Receiver: partnerIdentity,
-		// TODO: your code here
+		Counter: c.Sessions[*partnerIdentity].SendCounter,
+		LastUpdate: c.Sessions[*partnerIdentity].LastUpdate,
+		Ciphertext:  nil,
+		IV            : nil,
 	}
+	// Encrypt the message with AES-GCM
+	iv := NewIV()
+	message.IV = iv
+	message.Ciphertext = messageKey.AuthenticatedEncrypt(plaintext, message.EncodeAdditionalData(), iv)
 
-	// TODO: your code here
 
-	return message, errors.New("Not implemented")
+
+	//check ther is send chain
+
+	return message, nil
 }
 
 // ReceiveMessage is used to receive the given message and return the correct

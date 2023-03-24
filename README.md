@@ -54,7 +54,7 @@ SafeChat uses the following libraries and frameworks:
 
 ## Security
 
-SafeChat is designed with security in mind and uses the Signal protocol to provide end-to-end encryption for messages. The crypto library used by the application includes the AES-GCM, SHA-256, and P-256 algorithms, which are considered secure and widely used in the industry.
+SafeChat is designed with security in mind and uses the Signal protocol to provide end-to-end encryption for messages. Signal uses the curve25519 elliptic curve and AES-CBC encryption with HMAC. Here use NIST’s P-256 curve and AES-GCM authenticated encryption
 
 However, please note that no software can guarantee absolute security, and SafeChat should be used at your own risk.
 
