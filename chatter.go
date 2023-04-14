@@ -40,6 +40,7 @@ import (
 	"encoding/binary"
 	"errors"
 
+	"golang.org/x/tools/go/analysis/passes/nilfunc"
 	//"golang.org/x/text/message"
 	//	"fmt" //un-comment if you want to do any debug printing.
 )
@@ -307,16 +308,78 @@ func (c *Chatter) ReceiveMessage(message *Message) (string, error) {
 		return "", errors.New("Can't receive message from partner with no open session")
 	}
 
-	//Derive the chain key
-	chainKey := c.Sessions[*message.Sender].ReceiveChain.DeriveKey(CHAIN_LABEL)
-	c.Sessions[*message.Sender].ReceiveChain.Zeroize()
-	c.Sessions[*message.Sender].ReceiveChain = chainKey
+	//declare the message key
+	messageKey := nil
 
-	// Derive the message key
-	messageKey := chainKey.DeriveKey(KEY_LABEL)
+	// Get the message key
+	// In Sequence Message
+	if message.Counter == c.Sessions[*message.Sender].ReceiveCounter + 1 {
+
+		//if the message Lastupdate is greater than the receive counter, ratchet the root chain
+		if message.LastUpdate <= c.Sessions[*message.Sender].ReceiveCounter {
+			ses.ReceiveChain = ses.ReceiveChain.DeriveKey(CHAIN_LABEL)
+		} else {
+			//Ratchet the root chain
+			RootKey := c.Sessions[*message.Sender].RootChain.DeriveKey(ROOT_LABEL)
+			c.Sessions[*message.Sender].PartnerDHRatchet = message.NextDHRatchet
+			DH := DHCombine(c.Sessions[*message.Sender].PartnerDHRatchet, &c.Sessions[*message.Sender].MyDHRatchet.PrivateKey)
+			c.Sessions[*message.Sender].RootChain = CombineKeys(RootKey, DH)
+			c.Sessions[*message.Sender].ReceiveChain = c.Sessions[*message.Sender].RootChain.DeriveKey(CHAIN_LABEL)
+		}
+		//Derive messagekey 
+		messageKey = c.Sessions[*message.Sender].ReceiveChain.DeriveKey(KEY_LABEL)
+	}	
+	// Early Message
+	else {
+		if message.Counter > c.Sessions[*message.Sender].ReceiveCounter + 1 {
+
+			//if the message Lastupdate is greater than the receive counter, ratchet the root chain
+			KeyMaps := make([]int, 0)
+
+			// New DH Ratchet happens
+			if message.LastUpdate > c.Sessions[*message.Sender].ReceiveCounter {
+				
+				// Derive all the message keys and store them in the cache before LastUpdate
+				for i := c.Sessions[*message.Sender].ReceiveCounter + 1; i < message.LastUpdate; i++ {
+					KeyMaps = append(KeyMaps, i)
+					c.Sessions[*message.Sender].ReceiveChain = c.Sessions[*message.Sender].DeriveKey(CHAIN_LABEL)
+					c.Sessions[*message.Sender].CachedReceiveKeys[i] = c.Sessions[*message.Sender].ReceiveChain.DeriveKey(KEY_LABEL)				
+				}
+
+				//ratchet the root chain
+				RootKey := c.Sessions[*message.Sender].RootChain.DeriveKey(ROOT_LABEL)
+				c.Sessions[*message.Sender].PartnerDHRatchet = message.NextDHRatchet
+				DH := DHCombine(c.Sessions[*message.Sender].PartnerDHRatchet, &c.Sessions[*message.Sender].MyDHRatchet.PrivateKey)
+				c.Sessions[*message.Sender].RootChain = CombineKeys(RootKey, DH)
+				c.Sessions[*message.Sender].ReceiveChain = c.Sessions[*message.Sender].RootChain.DeriveKey(CHAIN_LABEL)
+
+				// Derive all the message keys and store them in the cache after LastUpdate
+
+				for i := message.LastUpdate; i < message.Counter; i++ {
+					KeyMaps = append(KeyMaps, i)
+					c.Sessions[*message.Sender].CachedReceiveKeys[i] = c.Sessions[*message.Sender].ReceiveChain.DeriveKey(KEY_LABEL)
+					c.Sessions[*message.Sender].ReceiveChain = c.Sessions[*message.Sender].DeriveKey(CHAIN_LABEL)
+				}
+
+			} else {// No new DH Ratchet happens
+				// Derive all the message keys and store them in the cache
+				for i := c.Sessions[*message.Sender].ReceiveCounter + 1; i < message.Counter; i++ {
+					KeyMaps = append(KeyMaps, i)
+					c.Sessions[*message.Sender].CachedReceiveKeys[i] = c.Sessions[*message.Sender].ReceiveChain.DeriveKey(KEY_LABEL)
+					c.Sessions[*message.Sender].ReceiveChain = c.Sessions[*message.Sender].DeriveKey(CHAIN_LABEL)
+				}
+			}
+		} else{ // Late Message
+			// Read the message key from the cache
+			messageKey = c.Sessions[*message.Sender].CachedReceiveKeys[message.Counter]
+		}
+	}
+
 
 	// Decrypt the message with AES-GCM
 	plaintext,err := messageKey.AuthenticatedDecrypt(message.Ciphertext, message.EncodeAdditionalData(), message.IV)
 
 	return plaintext, err
 }
+
+
