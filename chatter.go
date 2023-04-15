@@ -39,11 +39,20 @@ import (
 	//	"bytes" //un-comment for helpers like bytes.equal
 	"encoding/binary"
 	"errors"
-
-	"golang.org/x/tools/go/analysis/passes/nilfunc"
+	//"golang.org/x/tools/go/analysis/passes/nilfunc"
 	//"golang.org/x/text/message"
 	//	"fmt" //un-comment if you want to do any debug printing.
 )
+
+func StoreInCache(Session *Session, first int, last int) []int {
+	KeyMaps := make([]int, 0)
+	for i := first; i < last; i++ {
+		Session.ReceiveChain = Session.ReceiveChain.DeriveKey(CHAIN_LABEL)
+		Session.CachedReceiveKeys[i] = Session.ReceiveChain.DeriveKey(KEY_LABEL)
+		KeyMaps = append(KeyMaps, i)
+	}
+	return KeyMaps
+}
 
 // Labels for key derivation
 
@@ -99,7 +108,7 @@ type Message struct {
 
 // EncodeAdditionalData encodes all of the non-ciphertext fields of a message
 // into a single byte array, suitable for use as additional authenticated data
-// in an AEAD scheme. 
+// in an AEAD scheme.
 func (m *Message) EncodeAdditionalData() []byte {
 	buf := make([]byte, 8+3*FINGERPRINT_LENGTH)
 
@@ -118,7 +127,6 @@ func (m *Message) EncodeAdditionalData() []byte {
 
 	return buf
 }
-
 
 // NewChatter creates and initializes a new Chatter object. A long-term
 // identity key is created and the map of sessions is initialized.
@@ -154,12 +162,12 @@ func (c *Chatter) InitiateHandshake(partnerIdentity *PublicKey) (*PublicKey, err
 	}
 
 	c.Sessions[*partnerIdentity] = &Session{
-		MyDHRatchet       : GenerateKeyPair(), // ephemeral DH key
-		PartnerDHRatchet  : nil,
-		CachedReceiveKeys : make(map[int]*SymmetricKey),
-		SendCounter       : 0,
-		LastUpdate        : 0,
-		ReceiveCounter    : 0,
+		MyDHRatchet:       GenerateKeyPair(), // ephemeral DH key
+		PartnerDHRatchet:  nil,
+		CachedReceiveKeys: make(map[int]*SymmetricKey),
+		SendCounter:       0,
+		LastUpdate:        0,
+		ReceiveCounter:    0,
 	}
 
 	// Return Alice's ephemeral public key
@@ -176,14 +184,14 @@ func (c *Chatter) ReturnHandshake(partnerIdentity,
 	}
 
 	c.Sessions[*partnerIdentity] = &Session{
-		MyDHRatchet:      GenerateKeyPair(), // ephemeral DH key
-		PartnerDHRatchet: partnerEphemeral,
+		MyDHRatchet:       GenerateKeyPair(), // ephemeral DH key
+		PartnerDHRatchet:  partnerEphemeral,
 		CachedReceiveKeys: make(map[int]*SymmetricKey),
-		SendCounter:      0,
-		LastUpdate:       0,
-		ReceiveCounter:   0,
+		SendCounter:       0,
+		LastUpdate:        0,
+		ReceiveCounter:    0,
 	}
-	
+
 	// Derive the root key
 	g_Ab := DHCombine(partnerIdentity, &c.Sessions[*partnerIdentity].MyDHRatchet.PrivateKey)
 	g_aB := DHCombine(partnerEphemeral, &c.Identity.PrivateKey)
@@ -197,10 +205,10 @@ func (c *Chatter) ReturnHandshake(partnerIdentity,
 	//set the root chain
 	c.Sessions[*partnerIdentity].RootChain = RootKey
 
-	//set the receive chain 
+	//set the receive chain
 	c.Sessions[*partnerIdentity].ReceiveChain = RootKey.Duplicate()
 
-	return &c.Sessions[*partnerIdentity].MyDHRatchet.PublicKey, AuthKey,nil
+	return &c.Sessions[*partnerIdentity].MyDHRatchet.PublicKey, AuthKey, nil
 }
 
 // FinalizeHandshake lets the initiator receive the responder's ephemeral key
@@ -248,15 +256,15 @@ func (c *Chatter) SendMessage(partnerIdentity *PublicKey,
 	var messageKey *SymmetricKey
 
 	//Initialize the message
-	c.Sessions[*partnerIdentity].SendCounter++
 	message := &Message{
-		Sender:   &c.Identity.PublicKey,
-		Receiver: partnerIdentity,
+		Sender:        &c.Identity.PublicKey,
+		Receiver:      partnerIdentity,
 		NextDHRatchet: &c.Sessions[*partnerIdentity].MyDHRatchet.PublicKey,
-		Counter: c.Sessions[*partnerIdentity].SendCounter,
-		LastUpdate: c.Sessions[*partnerIdentity].LastUpdate,
-		Ciphertext:  nil,
-		IV            : nil,
+		Counter:       0,
+		LastUpdate:    0,
+		Ciphertext:    nil,
+		IV:            NewIV(),
+		
 	}
 
 	//if the send chain is not nil, ratchet the send chain
@@ -265,121 +273,146 @@ func (c *Chatter) SendMessage(partnerIdentity *PublicKey,
 		chainKey := c.Sessions[*partnerIdentity].SendChain.DeriveKey(CHAIN_LABEL)
 		c.Sessions[*partnerIdentity].SendChain.Zeroize()
 		c.Sessions[*partnerIdentity].SendChain = chainKey
-	} else {// if the send chain is nil, ratchet the root chain the the send chain
+	} else { // if the send chain is nil, ratchet the root chain the the send chain
 
-		//generate new DH key
-		NewDH := GenerateKeyPair()
-		c.Sessions[*partnerIdentity].MyDHRatchet = NewDH
-		message.NextDHRatchet = &NewDH.PublicKey
+		//generate new key
+		c.Sessions[*partnerIdentity].MyDHRatchet = GenerateKeyPair()
+		message.NextDHRatchet = &c.Sessions[*partnerIdentity].MyDHRatchet.PublicKey
 
-		//Ratchet the root chain , delete the old rootchain key and get the message key
-		g_a1b2 := DHCombine(c.Sessions[*partnerIdentity].PartnerDHRatchet, &c.Sessions[*partnerIdentity].MyDHRatchet.PrivateKey)
-		NewRootChain := CombineKeys(c.Sessions[*partnerIdentity].RootChain.DeriveKey(ROOT_LABEL), g_a1b2)
+		//Ratchet the root chain , delete the old rootchain key
+		RatchetRoot := c.Sessions[*partnerIdentity].RootChain.DeriveKey(ROOT_LABEL)
 		c.Sessions[*partnerIdentity].RootChain.Zeroize()
-		c.Sessions[*partnerIdentity].RootChain = NewRootChain
-		
+		NewDH := DHCombine(c.Sessions[*partnerIdentity].PartnerDHRatchet, &c.Sessions[*partnerIdentity].MyDHRatchet.PrivateKey)
+
+		// Derive the rootchain by combining the new DH key with the ratcheted root key 
+		c.Sessions[*partnerIdentity].RootChain = CombineKeys(RatchetRoot, NewDH)
+
 		//derive the send chain
-		chainKey := c.Sessions[*partnerIdentity].RootChain.DeriveKey(CHAIN_LABEL)
-		c.Sessions[*partnerIdentity].SendChain = chainKey
+		c.Sessions[*partnerIdentity].SendChain = c.Sessions[*partnerIdentity].RootChain.DeriveKey(CHAIN_LABEL)
+
+		// Update the last update counter
+		c.Sessions[*partnerIdentity].LastUpdate = c.Sessions[*partnerIdentity].SendCounter + 1
 	}
 
-
+	// Increment the send counter
+	c.Sessions[*partnerIdentity].SendCounter++
 
 	//derive the message key
 	messageKey = c.Sessions[*partnerIdentity].SendChain.DeriveKey(KEY_LABEL)
 
-	// Encrypt the message with AES-GCM
-	iv := NewIV()
-	message.IV = iv
-	message.Ciphertext = messageKey.AuthenticatedEncrypt(plaintext, message.EncodeAdditionalData(), iv)
+	// Update the last update counter and the message counter
+	message.LastUpdate = c.Sessions[*partnerIdentity].LastUpdate 
+	message.Counter = c.Sessions[*partnerIdentity].SendCounter
 
-	//delete the message key
-	messageKey.Zeroize()
+	// Encrypt the message with AES-GCM
+	//iv := NewIV()
+	message.Ciphertext = messageKey.AuthenticatedEncrypt(plaintext, message.EncodeAdditionalData(), message.IV)
 
 	return message, nil
 }
-
-// ReceiveMessage is used to receive the given message and return the correct
-// plaintext. This method is where most of the key derivation, ratcheting
-// and out-of-order message handling logic happens.
+	
 func (c *Chatter) ReceiveMessage(message *Message) (string, error) {
-
 	if _, exists := c.Sessions[*message.Sender]; !exists {
 		return "", errors.New("Can't receive message from partner with no open session")
 	}
 
-	//declare the message key
-	messageKey := nil
+	// Store backup of chain state
+	StoredRootChain := c.Sessions[*message.Sender].RootChain
+	StoredReceiveChain := c.Sessions[*message.Sender].ReceiveChain
+	StoredReceiveCounter := c.Sessions[*message.Sender].ReceiveCounter
+	StoredPartnerDHRatchet := c.Sessions[*message.Sender].PartnerDHRatchet
+	KeyMaps := make([]int, 0)
 
-	// Get the message key
-	// In Sequence Message
-	if message.Counter == c.Sessions[*message.Sender].ReceiveCounter + 1 {
+	// variable to track if we ratchet the chain
+	RatchetOrNot := false
 
-		//if the message Lastupdate is greater than the receive counter, ratchet the root chain
+	switch {
+	// 1) Sequential message
+	case message.Counter == c.Sessions[*message.Sender].ReceiveCounter + 1:
+		// Otherwise the message is in sequence
 		if message.LastUpdate <= c.Sessions[*message.Sender].ReceiveCounter {
-			ses.ReceiveChain = ses.ReceiveChain.DeriveKey(CHAIN_LABEL)
+			c.Sessions[*message.Sender].ReceiveChain = c.Sessions[*message.Sender].ReceiveChain.DeriveKey(CHAIN_LABEL)
 		} else {
 			//Ratchet the root chain
+			RatchetOrNot = true
 			RootKey := c.Sessions[*message.Sender].RootChain.DeriveKey(ROOT_LABEL)
 			c.Sessions[*message.Sender].PartnerDHRatchet = message.NextDHRatchet
 			DH := DHCombine(c.Sessions[*message.Sender].PartnerDHRatchet, &c.Sessions[*message.Sender].MyDHRatchet.PrivateKey)
 			c.Sessions[*message.Sender].RootChain = CombineKeys(RootKey, DH)
 			c.Sessions[*message.Sender].ReceiveChain = c.Sessions[*message.Sender].RootChain.DeriveKey(CHAIN_LABEL)
 		}
-		//Derive messagekey 
-		messageKey = c.Sessions[*message.Sender].ReceiveChain.DeriveKey(KEY_LABEL)
-	}	
-	// Early Message
-	else {
-		if message.Counter > c.Sessions[*message.Sender].ReceiveCounter + 1 {
 
-			//if the message Lastupdate is greater than the receive counter, ratchet the root chain
-			KeyMaps := make([]int, 0)
-
-			// New DH Ratchet happens
-			if message.LastUpdate > c.Sessions[*message.Sender].ReceiveCounter {
-				
-				// Derive all the message keys and store them in the cache before LastUpdate
-				for i := c.Sessions[*message.Sender].ReceiveCounter + 1; i < message.LastUpdate; i++ {
-					KeyMaps = append(KeyMaps, i)
-					c.Sessions[*message.Sender].ReceiveChain = c.Sessions[*message.Sender].DeriveKey(CHAIN_LABEL)
-					c.Sessions[*message.Sender].CachedReceiveKeys[i] = c.Sessions[*message.Sender].ReceiveChain.DeriveKey(KEY_LABEL)				
-				}
-
-				//ratchet the root chain
-				RootKey := c.Sessions[*message.Sender].RootChain.DeriveKey(ROOT_LABEL)
-				c.Sessions[*message.Sender].PartnerDHRatchet = message.NextDHRatchet
-				DH := DHCombine(c.Sessions[*message.Sender].PartnerDHRatchet, &c.Sessions[*message.Sender].MyDHRatchet.PrivateKey)
-				c.Sessions[*message.Sender].RootChain = CombineKeys(RootKey, DH)
-				c.Sessions[*message.Sender].ReceiveChain = c.Sessions[*message.Sender].RootChain.DeriveKey(CHAIN_LABEL)
-
-				// Derive all the message keys and store them in the cache after LastUpdate
-
-				for i := message.LastUpdate; i < message.Counter; i++ {
-					KeyMaps = append(KeyMaps, i)
-					c.Sessions[*message.Sender].CachedReceiveKeys[i] = c.Sessions[*message.Sender].ReceiveChain.DeriveKey(KEY_LABEL)
-					c.Sessions[*message.Sender].ReceiveChain = c.Sessions[*message.Sender].DeriveKey(CHAIN_LABEL)
-				}
-
-			} else {// No new DH Ratchet happens
-				// Derive all the message keys and store them in the cache
-				for i := c.Sessions[*message.Sender].ReceiveCounter + 1; i < message.Counter; i++ {
-					KeyMaps = append(KeyMaps, i)
-					c.Sessions[*message.Sender].CachedReceiveKeys[i] = c.Sessions[*message.Sender].ReceiveChain.DeriveKey(KEY_LABEL)
-					c.Sessions[*message.Sender].ReceiveChain = c.Sessions[*message.Sender].DeriveKey(CHAIN_LABEL)
-				}
+	// 2) Early Message
+	case message.Counter > c.Sessions[*message.Sender].ReceiveCounter+1:
+		// Message came in early
+		if message.LastUpdate > c.Sessions[*message.Sender].ReceiveCounter {
+			KeyMaps = append(KeyMaps, StoreInCache(c.Sessions[*message.Sender], c.Sessions[*message.Sender].ReceiveCounter+1, message.LastUpdate)...)
+			//Ratchet the root chain
+			RatchetOrNot = true
+			RootKey := c.Sessions[*message.Sender].RootChain.DeriveKey(ROOT_LABEL)
+			c.Sessions[*message.Sender].PartnerDHRatchet = message.NextDHRatchet
+			DH := DHCombine(c.Sessions[*message.Sender].PartnerDHRatchet, &c.Sessions[*message.Sender].MyDHRatchet.PrivateKey)
+			c.Sessions[*message.Sender].RootChain = CombineKeys(RootKey, DH)
+			c.Sessions[*message.Sender].ReceiveChain = c.Sessions[*message.Sender].RootChain.DeriveKey(CHAIN_LABEL)
+			
+			if message.LastUpdate != message.Counter {
+				c.Sessions[*message.Sender].CachedReceiveKeys[message.LastUpdate] = c.Sessions[*message.Sender].ReceiveChain.DeriveKey(KEY_LABEL)
+				KeyMaps = append(KeyMaps, message.LastUpdate)
+				KeyMaps = append(KeyMaps, StoreInCache(c.Sessions[*message.Sender], message.LastUpdate+1, message.Counter)...)
+				c.Sessions[*message.Sender].ReceiveChain = c.Sessions[*message.Sender].ReceiveChain.DeriveKey(CHAIN_LABEL)
 			}
-		} else{ // Late Message
-			// Read the message key from the cache
-			messageKey = c.Sessions[*message.Sender].CachedReceiveKeys[message.Counter]
+		} else {
+			KeyMaps = append(KeyMaps, StoreInCache(c.Sessions[*message.Sender], c.Sessions[*message.Sender].ReceiveCounter+1, message.Counter)...)
+			c.Sessions[*message.Sender].ReceiveChain = c.Sessions[*message.Sender].ReceiveChain.DeriveKey(CHAIN_LABEL)
+		}		
+	
+	// 3) Late Message
+	case message.Counter < c.Sessions[*message.Sender].ReceiveCounter:
+		// Handling late messages
+		messageKey := c.Sessions[*message.Sender].CachedReceiveKeys[message.Counter]
+		extra := message.EncodeAdditionalData()
+		plaintext, err := messageKey.AuthenticatedDecrypt(message.Ciphertext, extra, message.IV)
+		if err == nil {
+			c.Sessions[*message.Sender].CachedReceiveKeys[message.Counter].Zeroize()
+		}
+		return plaintext, err
+	}
+
+	/////////////////////////////////////////////////////////
+	// Decrypt the message if the receive chain is up to date
+	/////////////////////////////////////////////////////////
+
+	// Derive the message key
+	messageKey := c.Sessions[*message.Sender].ReceiveChain.DeriveKey(KEY_LABEL)
+	c.Sessions[*message.Sender].ReceiveCounter = message.Counter
+	plaintext, err := messageKey.AuthenticatedDecrypt(message.Ciphertext, message.EncodeAdditionalData(), message.IV)
+	
+	// Deal with tampering and recover from backup
+	if err == nil {
+		// Zeroize the old receive key and if we've ratcheted, we need to do some more zeroizing
+		if StoredReceiveChain != nil {
+			// Zeroize the receive key
+			StoredReceiveChain.Zeroize()
+		}
+		if RatchetOrNot {
+			// Zeroize the root key
+			StoredRootChain.Zeroize()
+			c.Sessions[*message.Sender].SendChain.Zeroize()
+			c.Sessions[*message.Sender].SendChain = nil
+			c.Sessions[*message.Sender].MyDHRatchet.Zeroize()
+		}
+	} else { // If no errors, zeroize the stored backup keys
+		// Zeroize the old receive key and if we've ratcheted, we need to do some more zeroizing
+		c.Sessions[*message.Sender].RootChain = StoredRootChain
+		c.Sessions[*message.Sender].ReceiveChain = StoredReceiveChain
+		c.Sessions[*message.Sender].ReceiveCounter = StoredReceiveCounter
+		c.Sessions[*message.Sender].PartnerDHRatchet = StoredPartnerDHRatchet
+		// Delete all the cached keys
+		for _, index := range KeyMaps {
+			delete(c.Sessions[*message.Sender].CachedReceiveKeys, index)
 		}
 	}
 
-
-	// Decrypt the message with AES-GCM
-	plaintext,err := messageKey.AuthenticatedDecrypt(message.Ciphertext, message.EncodeAdditionalData(), message.IV)
-
 	return plaintext, err
 }
-
 
